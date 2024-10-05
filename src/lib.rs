@@ -24,6 +24,8 @@ mod config_args;
 pub use config_args::CliArgsConfig;
 mod config_file;
 pub use config_file::ConfigFile;
+mod process_config;
+pub use process_config::process_config;
 
 // workset size (tweak this!)
 const WORK_SIZE: u32 = 0x4000000; // max. 0x15400000 to abs. max 0xffffffff
@@ -40,6 +42,15 @@ pub struct RunConfig {
     pub init_code_hash: [u8; 32],
     pub leading_zeroes_threshold: u8,
     pub total_zeroes_threshold: u8,
+    pub early_stop: bool,
+}
+
+pub struct SaltSearchResult {
+    pub salt: String,
+    pub address: Address,
+    pub reward: String,
+    pub leading: usize,
+    pub total: usize,
 }
 
 /// Given a Config object with a factory address, a caller address, and a
@@ -56,12 +67,15 @@ pub struct RunConfig {
 /// address is found, it will be appended to `efficient_addresses.txt` along
 /// with the resultant address and the "value" (i.e. approximate rarity) of the
 /// resultant address.
-pub fn cpu(config: RunConfig) -> Result<(), Box<dyn Error>> {
+pub fn cpu(config: RunConfig) -> Result<Vec<SaltSearchResult>, Box<dyn Error>> {
     // (create if necessary) and open a file where found salts will be written
     let file = output_file();
 
     // create object for computing rewards (relative rarity) for a given address
     let rewards = Reward::new();
+
+    // track how many addresses have been found and information about them
+    let mut found_results: Vec<SaltSearchResult> = vec![];
 
     // begin searching for addresses
     loop {
@@ -79,9 +93,9 @@ pub fn cpu(config: RunConfig) -> Result<(), Box<dyn Error>> {
         hash_header.update(&header);
 
         // iterate over a 6-byte nonce and compute each address
-        (0..MAX_INCREMENTER)
+        let run_results = (0..MAX_INCREMENTER)
             .into_par_iter() // parallelization
-            .for_each(|salt| {
+            .map(|salt| {
                 let salt = salt.to_le_bytes();
                 let salt_incremented_segment = &salt[..6];
 
@@ -111,9 +125,12 @@ pub fn cpu(config: RunConfig) -> Result<(), Box<dyn Error>> {
                     }
                 }
 
-                // only proceed if there are at least three zero bytes
-                if total < 3 {
-                    return;
+                // only proceed if the number of zero bytes match the threshold
+                if total < config.total_zeroes_threshold as usize
+                    || leading == 21
+                    || leading < config.leading_zeroes_threshold as usize
+                {
+                    return None;
                 }
 
                 // look up the reward amount
@@ -122,7 +139,7 @@ pub fn cpu(config: RunConfig) -> Result<(), Box<dyn Error>> {
 
                 // only proceed if an efficient address has been found
                 if reward_amount.is_none() {
-                    return;
+                    return None;
                 }
 
                 // get the full salt used to create the address
@@ -132,7 +149,7 @@ pub fn cpu(config: RunConfig) -> Result<(), Box<dyn Error>> {
 
                 // display the salt and the address.
                 let output = format!(
-                    "{full_salt} => {address} => {}",
+                    "{full_salt} => {address} => {} ({leading} / {total})",
                     reward_amount.unwrap_or("0")
                 );
                 println!("{output}");
@@ -145,8 +162,27 @@ pub fn cpu(config: RunConfig) -> Result<(), Box<dyn Error>> {
                     .expect("Couldn't write to `efficient_addresses.txt` file.");
 
                 // release the file lock
-                file.unlock().expect("Couldn't unlock file.")
+                file.unlock().expect("Couldn't unlock file.");
+
+                return Some(SaltSearchResult {
+                    salt: full_salt,
+                    address: *address,
+                    reward: reward_amount.unwrap_or("0").to_string(),
+                    leading,
+                    total,
+                });
             });
+
+        // collect the results
+        let run_results: Vec<SaltSearchResult> = run_results.filter_map(|x| x).collect();
+
+        // append the results to the found results
+        found_results.extend(run_results);
+
+        // If early stop is enabled, return after finding the first address
+        if config.early_stop && !found_results.is_empty() {
+            return Ok(found_results);
+        }
     }
 }
 
@@ -171,7 +207,7 @@ pub fn cpu(config: RunConfig) -> Result<(), Box<dyn Error>> {
 ///
 /// This method is still highly experimental and could almost certainly use
 /// further optimization - contributions are more than welcome!
-pub fn gpu(config: RunConfig, gpu_device: u8) -> ocl::Result<()> {
+pub fn gpu(config: RunConfig, gpu_device: u8) -> ocl::Result<Vec<SaltSearchResult>> {
     println!(
         "Setting up experimental OpenCL miner using device {}...",
         gpu_device
@@ -186,6 +222,7 @@ pub fn gpu(config: RunConfig, gpu_device: u8) -> ocl::Result<()> {
     // track how many addresses have been found and information about them
     let mut found: u64 = 0;
     let mut found_list: Vec<String> = vec![];
+    let mut found_results: Vec<SaltSearchResult> = vec![];
 
     // set up a controller for terminal output
     let term = Term::stdout();
@@ -448,12 +485,31 @@ pub fn gpu(config: RunConfig, gpu_device: u8) -> ocl::Result<()> {
             let show = format!("{output} ({leading} / {total})");
             found_list.push(show.to_string());
 
+            // push our salt search result
+            found_results.push(SaltSearchResult {
+                salt: format!(
+                    "0x{}{}{}",
+                    hex::encode(config.calling_address),
+                    hex::encode(salt),
+                    hex::encode(solution)
+                ),
+                address: *address,
+                reward: reward.to_string(),
+                leading,
+                total,
+            });
+
             file.lock_exclusive().expect("Couldn't lock file.");
 
             writeln!(&file, "{output}").expect("Couldn't write to `efficient_addresses.txt` file.");
 
             file.unlock().expect("Couldn't unlock file.");
             found += 1;
+
+            // If early stop is enabled, return after finding the first address
+            if config.early_stop {
+                return Ok(found_results);
+            }
         }
     }
 }

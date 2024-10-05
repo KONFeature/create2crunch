@@ -1,6 +1,5 @@
 use create2crunch::CliArgsConfig;
 use create2crunch::ConfigFile;
-use std::collections::HashMap;
 use std::env;
 use std::process;
 
@@ -57,68 +56,8 @@ fn run_with_config_file(args: &[String]) {
     });
 
     // Process the configuration
-    if let Err(e) = process_config(config_file) {
+    if let Err(e) = create2crunch::process_config(config_file) {
         eprintln!("Configuration processing error: {e}");
         process::exit(1);
     }
-}
-
-fn process_config(config_file: ConfigFile) -> Result<(), Box<dyn std::error::Error>> {
-    // Map to store computed addresses by placeholder name
-    let mut computed_addresses: HashMap<String, String> = HashMap::new();
-
-    // Targets that are yet to be processed
-    let mut remaining_targets = config_file.targets.clone();
-
-    // Loop until all targets are processed or no progress is made
-    while !remaining_targets.is_empty() {
-        let initial_len = remaining_targets.len();
-        let mut processed_indices = Vec::new();
-
-        for (i, target) in remaining_targets.iter().enumerate() {
-            // Check if all placeholders in this target can be filled
-            let can_process = if let Some(placeholder_name) = &target.placeholder_name {
-                // Check if the placeholder value is available
-                computed_addresses.contains_key(placeholder_name)
-            } else {
-                true // No placeholder, can process
-            };
-
-            // if can_process {
-            //     // Construct RunConfig
-            //     let run_config = create2crunch::RunConfig::from_config_file(
-            //         &config_file,
-            //         target,
-            //         &computed_addresses,
-            //     )?;
-
-            //     // Decide whether to use CPU or GPU
-            //     let result_address = if run_config.gpu_device == 255 {
-            //         create2crunch::cpu_run(run_config)?
-            //     } else {
-            //         create2crunch::gpu_run(run_config)?
-            //     };
-
-            //     // If this target defines a placeholder, store the computed address
-            //     if let Some(placeholder_name) = &target.placeholder_name {
-            //         computed_addresses.insert(placeholder_name.clone(), result_address);
-            //     }
-
-            //     // Mark this target as processed
-            //     processed_indices.push(i);
-            // }
-        }
-
-        // Remove processed targets from the list
-        for &i in processed_indices.iter().rev() {
-            remaining_targets.remove(i);
-        }
-
-        // If no targets were processed in this iteration, there is a circular dependency or missing placeholder
-        if remaining_targets.len() == initial_len {
-            return Err("Unable to process all targets".into());
-        }
-    }
-
-    Ok(())
 }

@@ -108,6 +108,7 @@ impl CliArgsConfig {
             init_code_hash: self.init_code_hash,
             leading_zeroes_threshold: self.leading_zeroes_threshold,
             total_zeroes_threshold: self.total_zeroes_threshold,
+            early_stop: false,
         }
     }
 }
