@@ -20,6 +20,11 @@ use tiny_keccak::{Hasher, Keccak};
 mod reward;
 pub use reward::Reward;
 
+mod config_args;
+pub use config_args::CliArgsConfig;
+mod config_file;
+pub use config_file::ConfigFile;
+
 // workset size (tweak this!)
 const WORK_SIZE: u32 = 0x4000000; // max. 0x15400000 to abs. max 0xffffffff
 
@@ -29,102 +34,12 @@ const MAX_INCREMENTER: u64 = 0xffffffffffff;
 
 static KERNEL_SRC: &str = include_str!("./kernels/keccak256.cl");
 
-/// Requires three hex-encoded arguments: the address of the contract that will
-/// be calling CREATE2, the address of the caller of said contract *(assuming
-/// the contract calling CREATE2 has frontrunning protection in place - if not
-/// applicable to your use-case you can set it to the null address)*, and the
-/// keccak-256 hash of the bytecode that is provided by the contract calling
-/// CREATE2 that will be used to initialize the new contract. An additional set
-/// of three optional values may be provided: a device to target for OpenCL GPU
-/// search, a threshold for leading zeroes to search for, and a threshold for
-/// total zeroes to search for.
-pub struct Config {
+pub struct RunConfig {
     pub factory_address: [u8; 20],
     pub calling_address: [u8; 20],
     pub init_code_hash: [u8; 32],
-    pub gpu_device: u8,
     pub leading_zeroes_threshold: u8,
     pub total_zeroes_threshold: u8,
-}
-
-/// Validate the provided arguments and construct the Config struct.
-impl Config {
-    pub fn new(mut args: std::env::Args) -> Result<Self, &'static str> {
-        // get args, skipping first arg (program name)
-        args.next();
-
-        let Some(factory_address_string) = args.next() else {
-            return Err("didn't get a factory_address argument");
-        };
-        let Some(calling_address_string) = args.next() else {
-            return Err("didn't get a calling_address argument");
-        };
-        let Some(init_code_hash_string) = args.next() else {
-            return Err("didn't get an init_code_hash argument");
-        };
-
-        let gpu_device_string = match args.next() {
-            Some(arg) => arg,
-            None => String::from("255"), // indicates that CPU will be used.
-        };
-        let leading_zeroes_threshold_string = match args.next() {
-            Some(arg) => arg,
-            None => String::from("3"),
-        };
-        let total_zeroes_threshold_string = match args.next() {
-            Some(arg) => arg,
-            None => String::from("5"),
-        };
-
-        // convert main arguments from hex string to vector of bytes
-        let Ok(factory_address_vec) = hex::decode(factory_address_string) else {
-            return Err("could not decode factory address argument");
-        };
-        let Ok(calling_address_vec) = hex::decode(calling_address_string) else {
-            return Err("could not decode calling address argument");
-        };
-        let Ok(init_code_hash_vec) = hex::decode(init_code_hash_string) else {
-            return Err("could not decode initialization code hash argument");
-        };
-
-        // convert from vector to fixed array
-        let Ok(factory_address) = factory_address_vec.try_into() else {
-            return Err("invalid length for factory address argument");
-        };
-        let Ok(calling_address) = calling_address_vec.try_into() else {
-            return Err("invalid length for calling address argument");
-        };
-        let Ok(init_code_hash) = init_code_hash_vec.try_into() else {
-            return Err("invalid length for initialization code hash argument");
-        };
-
-        // convert gpu arguments to u8 values
-        let Ok(gpu_device) = gpu_device_string.parse::<u8>() else {
-            return Err("invalid gpu device value");
-        };
-        let Ok(leading_zeroes_threshold) = leading_zeroes_threshold_string.parse::<u8>() else {
-            return Err("invalid leading zeroes threshold value supplied");
-        };
-        let Ok(total_zeroes_threshold) = total_zeroes_threshold_string.parse::<u8>() else {
-            return Err("invalid total zeroes threshold value supplied");
-        };
-
-        if leading_zeroes_threshold > 20 {
-            return Err("invalid value for leading zeroes threshold argument. (valid: 0..=20)");
-        }
-        if total_zeroes_threshold > 20 && total_zeroes_threshold != 255 {
-            return Err("invalid value for total zeroes threshold argument. (valid: 0..=20 | 255)");
-        }
-
-        Ok(Self {
-            factory_address,
-            calling_address,
-            init_code_hash,
-            gpu_device,
-            leading_zeroes_threshold,
-            total_zeroes_threshold,
-        })
-    }
 }
 
 /// Given a Config object with a factory address, a caller address, and a
@@ -141,7 +56,7 @@ impl Config {
 /// address is found, it will be appended to `efficient_addresses.txt` along
 /// with the resultant address and the "value" (i.e. approximate rarity) of the
 /// resultant address.
-pub fn cpu(config: Config) -> Result<(), Box<dyn Error>> {
+pub fn cpu(config: RunConfig) -> Result<(), Box<dyn Error>> {
     // (create if necessary) and open a file where found salts will be written
     let file = output_file();
 
@@ -256,10 +171,10 @@ pub fn cpu(config: Config) -> Result<(), Box<dyn Error>> {
 ///
 /// This method is still highly experimental and could almost certainly use
 /// further optimization - contributions are more than welcome!
-pub fn gpu(config: Config) -> ocl::Result<()> {
+pub fn gpu(config: RunConfig, gpu_device: u8) -> ocl::Result<()> {
     println!(
         "Setting up experimental OpenCL miner using device {}...",
-        config.gpu_device
+        gpu_device
     );
 
     // (create if necessary) and open a file where found salts will be written
@@ -279,7 +194,7 @@ pub fn gpu(config: Config) -> ocl::Result<()> {
     let platform = Platform::new(ocl::core::default_platform()?);
 
     // set up the device to use
-    let device = Device::by_idx_wrap(platform, config.gpu_device as usize)?;
+    let device = Device::by_idx_wrap(platform, gpu_device as usize)?;
 
     // set up the context to use
     let context = Context::builder()
@@ -555,7 +470,7 @@ fn output_file() -> File {
 
 /// Creates the OpenCL kernel source code by populating the template with the
 /// values from the Config object.
-fn mk_kernel_src(config: &Config) -> String {
+fn mk_kernel_src(config: &RunConfig) -> String {
     let mut src = String::with_capacity(2048 + KERNEL_SRC.len());
 
     let factory = config.factory_address.iter();

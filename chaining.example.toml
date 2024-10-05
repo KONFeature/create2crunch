@@ -1,0 +1,16 @@
+# Global config
+bin_folder = "./bin"
+factory_address = "0xdeadbeef"
+calling_address = "0xdeadbeef"
+gpu_device = 0
+
+# Targets
+[[targets]]
+name = "contract1.bin"
+placeholder_name = "PRODUCT_INTERACTION_ADDRESS"
+stop_thresholds = { leading_zeroes = 3, total_zeroes = 5 }
+
+[[targets]]
+name = "contract2.bin"
+placeholder_name = "ANOTHER_PLACEHOLDER"
+stop_thresholds = { leading_zeroes = 2, total_zeroes = 4 }
