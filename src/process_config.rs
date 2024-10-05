@@ -70,11 +70,16 @@ pub fn process_config(config_file: ConfigFile) -> Result<(), Box<dyn std::error:
                     result.total
                 );
 
-                // create a lock on the file before writing
+                // Write the address output
                 file.lock_exclusive().expect("Couldn't lock file.");
                 writeln!(&file, "{output}")
                     .expect("Couldn't write to `address_per_contracts.txt` file.");
                 file.unlock().expect("Couldn't unlock file.");
+
+                // Move the `efficient_addresses.txt`` file to an `efficient_addresses.{target.name}.txt`` file
+                let efficient_addresses_file = format!("efficient_addresses.{}.txt", target.name);
+                std::fs::rename("efficient_addresses.txt", efficient_addresses_file)
+                    .expect("Couldn't rename file.");
 
                 // If this target defines a placeholder, store the computed address
                 if let Some(placeholder_name) = &target.placeholder_name {
